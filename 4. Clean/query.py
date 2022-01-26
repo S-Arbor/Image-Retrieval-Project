@@ -35,16 +35,16 @@ def qe_query(query, query_target, metric_function=sklearn.metrics.pairwise.eucli
 
     if type == "qe baseline":
         # find top n results, combine top n into a new query, append results of new query to top n
-        top_n = query_target[:n]
-        second_query = np.average(top_n, axis=0)
+        top_n_results = original_results[:n]
+        second_query = np.average(query_target[top_n_results], axis=0)
         
         if alpha != 1:
             combined_queries = np.vstack([query, second_query])
             second_query = np.average([query, second_query], axis = 0, weights = [1-alpha, alpha])
-
+            
         new_results = basic_query(second_query, query_target, metric_function)
-        pruned_new_results = new_results[np.logical_not(np.isin(new_results, top_n))]
-        results = np.concatenate([original_results, pruned_new_results])
+        pruned_new_results = new_results[np.logical_not(np.isin(new_results, top_n_results))]
+        results = np.concatenate([top_n_results, pruned_new_results])
 
         return(results)
 
