@@ -1,18 +1,103 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
+## The following is a modified version of code from https://github.com/fyang93/diffusion
+## It has been augmented to be importable into the rest of my pipeline
 
-" diffusion module "
-
-import os
 import time
 import numpy as np
+import os
 import joblib
-from joblib import Parallel, delayed
 import scipy.sparse as sparse
 import scipy.sparse.linalg as linalg
+import faiss
+from sympy import evaluate
 from tqdm import tqdm
-from knn import KNN, ANN
+from sklearn import preprocessing
+from joblib import Parallel, delayed
 
+kq, kd = 10, 50
+
+def diffusion_ranks(queries, gallery, cache_dir, truncation_size=None):
+    if not truncation_size:
+    	if len(gallery) > 1000:
+    		truncation_size = 1000
+    	else:
+	    	truncation_size = len(gallery)
+    if not os.path.isdir(cache_dir):
+        os.makedirs(cache_dir)
+    n_query = len(queries)
+    diffusion = Diffusion(np.vstack([queries, gallery]), cache_dir)
+    offline = diffusion.get_offline_results(truncation_size, kd)
+    features = preprocessing.normalize(offline, norm="l2", axis=1)
+    scores = features[:n_query] @ features[n_query:].T
+    ranks = np.argsort(-scores.todense())
+    return(ranks.A)
+    
+class BaseKNN(object):
+    """KNN base class"""
+    def __init__(self, database, method):
+        if database.dtype != np.float32:
+            database = database.astype(np.float32)
+        self.N = len(database)
+        self.D = database[0].shape[-1]
+        self.database = database if database.flags['C_CONTIGUOUS'] \
+                               else np.ascontiguousarray(database)
+
+    def add(self, batch_size=10000):
+        """Add data into index"""
+        if self.N <= batch_size:
+            self.index.add(self.database)
+        else:
+            [self.index.add(self.database[i:i+batch_size])
+                    for i in tqdm(range(0, len(self.database), batch_size),
+                                  desc='[index] add')]
+
+    def search(self, queries, k):
+        """Search
+        Args:
+            queries: query vectors
+            k: get top-k results
+        Returns:
+            sims: similarities of k-NN
+            ids: indexes of k-NN
+        """
+        if not queries.flags['C_CONTIGUOUS']:
+            queries = np.ascontiguousarray(queries)
+        if queries.dtype != np.float32:
+            queries = queries.astype(np.float32)
+        sims, ids = self.index.search(queries, k)
+        return sims, ids
+
+
+class KNN(BaseKNN):
+    """KNN class
+    Args:
+        database: feature vectors in database
+        method: distance metric
+    """
+    def __init__(self, database, method):
+        super().__init__(database, method)
+        self.index = {'cosine': faiss.IndexFlatIP,
+                      'euclidean': faiss.IndexFlatL2}[method](self.D)
+        if os.environ.get('CUDA_VISIBLE_DEVICES'):
+            self.index = faiss.index_cpu_to_all_gpus(self.index)
+        self.add()
+
+
+class ANN(BaseKNN):
+    """Approximate nearest neighbor search class
+    Args:
+        database: feature vectors in database
+        method: distance metric
+    """
+    def __init__(self, database, method, M=128, nbits=8, nlist=316, nprobe=64):
+        super().__init__(database, method)
+        self.quantizer = {'cosine': faiss.IndexFlatIP,
+                          'euclidean': faiss.IndexFlatL2}[method](self.D)
+        self.index = faiss.IndexIVFPQ(self.quantizer, self.D, nlist, M, nbits)
+        samples = database[np.random.permutation(np.arange(self.N))[:self.N // 5]]
+        print("[ANN] train")
+        self.index.train(samples)
+        self.add()
+        self.index.nprobe = nprobe
 
 trunc_ids = None
 trunc_init = None
@@ -136,3 +221,4 @@ class Diffusion(object):
         affinity = sparse.csc_matrix((mut_sims, (vec_ids, mut_ids)),
                                      shape=(num, num), dtype=np.float32)
         return affinity
+
