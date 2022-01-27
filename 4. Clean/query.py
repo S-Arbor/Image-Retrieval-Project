@@ -12,7 +12,7 @@ def return_ranks(method, queries, gallery, **kwargs):
     elif method == "diffusion":
         ranks = diffusion.diffusion_ranks(queries, gallery, **kwargs)
         return(ranks)
-    elif method == "expanded query":
+    elif method == "expanded":
         ranks = np.array([qe_query(query, gallery, **kwargs) for query in queries])
         return(ranks)
     
